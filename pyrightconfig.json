@@ -1,0 +1,11 @@
+{
+    "pythonVersion": "3.12",
+    "pythonPlatform": "Windows",
+    "typeCheckingMode": "basic",
+    "include": ["."],
+    "exclude": [".venv", "venv", "__pycache__", ".git"],
+    "extraPaths": [],
+    "useLibraryCodeForTypes": true,
+    "reportMissingImports": true,
+    "reportMissingTypeStubs": false
+}

@@ -11,6 +11,12 @@ import requests
 
 OLLAMA_BASE = "http://localhost:11434"
 MODEL       = "gemma4:e4b"
+STARTER_CODE = """\
+# Write your code here
+print("Hello, Gemma 4!")
+\
+"""
+
 LANGUAGES = [
     "python", "javascript", "typescript", "bash", "sql",
     "rust", "go", "java", "c", "cpp", "html", "css",
@@ -214,13 +220,40 @@ def chat(
         messages.append(
             {"role": role, "content": _gradio_content_to_text(h.get("content"))}
         )
+    
     content = message
+    
+    # Add image context
+    image_path = resolve_gradio_path(image_path)
+    if image_path and is_image_path(image_path):
+        b64 = encode_image(image_path)
+        if b64:
+            content += f"\n\n**[Image attached: {Path(image_path).name}]**"
+    
+    # Add file context
+    file_path = resolve_gradio_path(file_path)
+    if file_path:
+        file_ctx = file_as_context(file_path)
+        if file_ctx:
+            content += file_ctx
+    
+    # Add editor code
     if editor_code.strip() and editor_code.strip() != STARTER_CODE.strip():
         content += (
             f"\n\n**Current code in editor ({language}):**\n"
             f"```{language}\n{editor_code}\n```"
         )
-        payload = {
+    
+    messages.append({"role": "user", "content": content})
+    
+    # Build request payload
+    options = {
+        "temperature": temperature,
+        "top_k": 40,
+        "top_p": 0.9,
+    }
+    
+    payload = {
         "model": MODEL,
         "messages": messages,
         "stream": True,
@@ -228,23 +261,84 @@ def chat(
     }
 
     if agentic:
-        payload["tools"] = TOOLS   
+        payload["tools"] = TOOLS
 
-    if agentic and msg.get("tool_calls"):
-        for tc in msg["tool_calls"]:
-            fn_name = tc["function"]["name"]
-            fn_args = tc["function"]["arguments"]
-            result = execute_tool(fn_name, fn_args)
-            if fn_name == "run_code" and fn_args.get("code"):
-                new_code = fn_args["code"]
-            messages.append(msg)
-            messages.append({"role": "tool", "content": result})
-        resp2 = requests.post(f"{OLLAMA_BASE}/api/chat", ...)     
-        # ...aquí continúan los subpasos 2, 3, 4 y 5 del paso 6
+    # Stream response
+    full_response = ""
+    new_code = None
+    
+    try:
+        with requests.post(
+            f"{OLLAMA_BASE}/api/chat",
+            json=payload,
+            stream=True,
+            timeout=60,
+        ) as resp:
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                try:
+                    chunk = json.loads(line)
+                    if chunk.get("message", {}).get("content"):
+                        full_response += chunk["message"]["content"]
+                    
+                    # Handle tool calls
+                    if agentic and chunk.get("message", {}).get("tool_calls"):
+                        for tc in chunk["message"]["tool_calls"]:
+                            fn_name = tc["function"]["name"]
+                            fn_args = tc["function"]["arguments"]
+                            result = execute_tool(fn_name, fn_args)
+                            if fn_name == "run_code" and fn_args.get("code"):
+                                new_code = fn_args["code"]
+                            messages.append({"role": "assistant", "content": full_response})
+                            messages.append({"role": "tool", "content": result})
+                except json.JSONDecodeError:
+                    continue
+    except Exception as e:
+        full_response = f"Error: {e}"
+    
+    # Extract code from response
     extracted, _ = extract_last_code_block(full_response)
-
     if extracted:
         new_code = extracted
+    
+    # Update history and return
+    new_history = _append_chat_turn(history, message, full_response)
+    
+    return new_history, new_code or editor_code, ""
+
+CSS = """\
+gradio-app {
+    --body-background-fill:   #f0f3f7;
+    --block-background-fill:  #ffffff;
+    --body-text-color:        #1f2328;
+    --button-primary-background-fill: #1a7f37;
+}
+
+body.dark gradio-app {
+    --body-background-fill:   #0d1117;
+    --block-background-fill:  #1c2128;
+    --body-text-color:        #e6edf3;
+    --button-primary-background-fill: #238636;
+}
+\
+"""
+
+THEME = gr.Theme(
+    primary_hue   = "blue",
+    secondary_hue = "slate",
+    neutral_hue   = "slate",
+    font      = ["system-ui", "sans-serif"],
+    font_mono = ["monospace"],
+)
+
+def respond(message, history, image_path, file_path, editor_code, language, system_prompt, agentic, thinking, temperature):
+    new_history, new_code, cleared_input = chat(
+        message, history, image_path, file_path,
+        editor_code, language, system_prompt,
+        agentic, thinking, temperature,
+    )
+    return new_history, new_code, cleared_input
 
 with gr.Blocks(title="Gemma 4 · Code Assistant") as demo:
     with gr.Row(equal_height=False):
@@ -267,6 +361,9 @@ with gr.Blocks(title="Gemma 4 · Code Assistant") as demo:
                 interactive=False,
                 elem_id="run-output",
             )
+            run_btn.click(fn=run_code_btn, inputs=[code_editor], outputs=[run_output])
+            clear_ed.click(fn=lambda: STARTER_CODE, outputs=[code_editor])
+        
         # RIGHT: Chat
         with gr.Column(scale=9):
             chatbot = gr.Chatbot(value=[], elem_id="chatbot", height=430)
@@ -283,36 +380,17 @@ with gr.Blocks(title="Gemma 4 · Code Assistant") as demo:
             with gr.Accordion("Settings", open=False):
                 sys_prompt  = gr.Textbox(value=DEFAULT_SYSTEM, label="System prompt")
                 temperature = gr.Slider(minimum=0.0, maximum=2.0, value=0.7)
+        
         _inputs = [
-    msg_input, chatbot, image_upload, file_upload,
-    code_editor, lang_sel,
-    sys_prompt, agentic_cb, thinking_cb, temperature,
-]
-_outputs = [chatbot, code_editor, msg_input]
-send_btn.click(fn=respond, inputs=_inputs, outputs=_outputs)
-msg_input.submit(fn=respond, inputs=_inputs, outputs=_outputs)    
-
-THEME = gr.themes.Base(
-    primary_hue   = "blue",
-    secondary_hue = "slate",
-    neutral_hue   = "slate",
-    font      = [gr.themes.GoogleFont("Inter"), "system-ui", "sans-serif"],
-    font_mono = [gr.themes.GoogleFont("JetBrains Mono"), "monospace"],
-)
-
-gradio-app {
-    --body-background-fill:   #f0f3f7;
-    --block-background-fill:  #ffffff;
-    --body-text-color:        #1f2328;
-    --button-primary-background-fill: #1a7f37;
-}
-
-body.dark gradio-app {
-    --body-background-fill:   #0d1117;
-    --block-background-fill:  #1c2128;
-    --body-text-color:        #e6edf3;
-    --button-primary-background-fill: #238636;
-}
+            msg_input, chatbot, image_upload, file_upload,
+            code_editor, lang_sel,
+            sys_prompt, agentic_cb, thinking_cb, temperature,
+        ]
+        _outputs = [chatbot, code_editor, msg_input]
+        
+        send_btn.click(fn=respond, inputs=_inputs, outputs=_outputs)
+        msg_input.submit(fn=respond, inputs=_inputs, outputs=_outputs)
+        clear_chat.click(fn=lambda: [], outputs=[chatbot])
 
 if __name__ == "__main__":
     print(f"Model  : {MODEL}")
