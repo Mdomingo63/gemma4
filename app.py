@@ -321,7 +321,6 @@ body.dark gradio-app {
     --body-text-color:        #e6edf3;
     --button-primary-background-fill: #238636;
 }
-\
 """
 
 THEME = gr.Theme(
