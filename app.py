@@ -10,7 +10,7 @@ import gradio as gr
 import requests
 
 OLLAMA_BASE = "http://localhost:11434"
-MODEL       = "gemma4:e4b"
+MODEL = "gemma2:latest"
 STARTER_CODE = """\
 # Write your code here
 print("Hello, Gemma 4!")
